@@ -31,11 +31,8 @@ class Autoencoder(nn.Module):
         assert (self.all_speeds and spd is None) or \
                (not self.all_speeds and spd is not None)
 
-        #input_image = self.normalize(wide_rgb/255.)
-
         wide_embed = self.backbone_wide(wide_rgb)
 
-        #wide_embed = self.backbone_wide(self.normalize(wide_rgb/255.))
         wide_seg_output = self.seg_head_wide(wide_embed)
 
         decoded_rgb = self.decoder(wide_embed)

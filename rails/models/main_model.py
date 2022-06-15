@@ -17,40 +17,16 @@ class CameraModel(nn.Module):
         self.num_labels = len(config['seg_channels'])
         self.all_speeds = config['all_speeds']
         self.two_cam    = config['use_narr_cam']
+        self.use_trained_encoder = config['use_trained_encoder']
 
         self.backbone_wide = resnet34(pretrained=config['imagenet_pretrained'])
-        self.backbone_wide.load_state_dict(torch.load("/lhome/asszewcz/Documents/WorldOnRails/encoder_models/encoder_model_12.th"))
+
+        if self.use_trained_encoder:
+            self.backbone_wide.load_state_dict(torch.load("/encoder_models/encoder_model_12.th"))
+
         for param in self.backbone_wide.parameters():
            param.requires_grad = False
 
-        self.latent_space_head = nn.Sequential(
-            nn.Conv2d(512, 256, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(True),
-            nn.Conv2d(256, 64, kernel_size=3, stride=2),
-            nn.ReLU(True),
-            nn.Flatten(),
-            nn.Linear(896, 512),
-            nn.ReLU(True)
-        )
-
-        # self.latent_space_head = nn.Sequential(
-        #     nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1),
-        #     nn.ReLU(True),
-        #     nn.Conv2d(512, 512, kernel_size=3, stride=1),
-        #     nn.ReLU(True),
-        #     nn.Conv2d(512, 256, kernel_size=3, stride=1),
-        #     nn.ReLU(True),
-        #     nn.Conv2d(256, 64, kernel_size=2, stride=1),
-        #     nn.ReLU(True),
-        #     nn.Flatten(),
-        #     nn.Linear(640, 512),
-        #     nn.ReLU(True),
-        #     nn.Linear(512, 512),
-        #     nn.ReLU(True)
-        # )
-
-        # Encoder is already trained with semantic segmentation
-        #self.seg_head_wide = SegmentationHead(512, self.num_labels+1)
 
         if self.two_cam:
             self.backbone_narr = resnet18(pretrained=config['imagenet_pretrained'])
@@ -71,6 +47,7 @@ class CameraModel(nn.Module):
                 nn.ReLU(True),
             )
 
+        self.seg_head_wide = SegmentationHead(512, self.num_labels+1)
         self.act_head = nn.Sequential(
             nn.Linear(512 + (0 if self.all_speeds else 64) + (64 if self.two_cam else 0),256),
             nn.ReLU(True),
@@ -86,52 +63,37 @@ class CameraModel(nn.Module):
         assert (self.all_speeds and spd is None) or \
                (not self.all_speeds and spd is not None)
 
-        # wide_embed = self.backbone_wide(self.normalize(wide_rgb/255.))
-        # print("wide_rgb_shape: ", wide_rgb.shape)
-        # Encoder backbone was trained with values in range 0-1
-        wide_embed = self.backbone_wide(wide_rgb/255.)
-        
-        space_interpretation = self.latent_space_head(wide_embed)
+        if self.use_trained_encoder:
+            wide_embed = self.backbone_wide(wide_rgb/255.)
+        else:
+            wide_embed = self.backbone_wide(self.normalize(wide_rgb/255.))
 
-        # print("wide_embed shape: ", wide_embed.shape)
-        # print("space_interpretation shape: ", space_interpretation.shape)
-        # exit()
-
-        # Encoder is already trained with semantic segmentation
-        #wide_seg_output = self.seg_head_wide(wide_embed)
-
-        # if self.two_cam:
-        #     narr_embed = self.backbone_narr(self.normalize(narr_rgb/255.))
-        #     narr_seg_output = self.seg_head_narr(narr_embed)
-        #     embed = torch.cat([
-        #         wide_embed.mean(dim=[2,3]),
-        #         self.bottleneck_narr(narr_embed.mean(dim=[2,3])),
-        #     ], dim=1)
-        # else:
-        #     embed = wide_embed.mean(dim=[2,3])
-
-        # Spaces action_head from latent space
-        #embed = self.latent_space_spacing(embed)
-
-        # Action logits
-        # if self.all_speeds:
-        #     act_output = self.act_head(embed).view(-1,self.num_cmds,self.num_speeds,self.num_steers+self.num_throts+1)
-        #     act_output = action_logits(act_output, self.num_steers, self.num_throts)
-        # else:
-        #     act_output = self.act_head(torch.cat([embed, self.spd_encoder(spd[:,None])], dim=1)).view(-1,self.num_cmds,1,self.num_steers+self.num_throts+1)
-        #     act_output = action_logits(act_output, self.num_steers, self.num_throts).squeeze(2)
-        
-        act_output = self.act_head(space_interpretation).view(-1,self.num_cmds,self.num_speeds,self.num_steers+self.num_throts+1)
-        #print("act head output: ", act_output.shape)
-        act_output = action_logits(act_output, self.num_steers, self.num_throts)
-        #print("act logits output: ", act_output.shape)
+        wide_seg_output = self.seg_head_wide(wide_embed)
 
         if self.two_cam:
-            #return act_output, wide_seg_output, narr_seg_output
-            return act_output
+            narr_embed = self.backbone_narr(self.normalize(narr_rgb/255.))
+            narr_seg_output = self.seg_head_narr(narr_embed)
+            embed = torch.cat([
+                wide_embed.mean(dim=[2,3]),
+                self.bottleneck_narr(narr_embed.mean(dim=[2,3])),
+            ], dim=1)
         else:
-            #return act_output, wide_seg_output
-            return act_output
+            embed = wide_embed.mean(dim=[2,3])
+
+
+        # Action logits
+        if self.all_speeds:
+            act_output = self.act_head(embed).view(-1,self.num_cmds,self.num_speeds,self.num_steers+self.num_throts+1)
+            act_output = action_logits(act_output, self.num_steers, self.num_throts)
+        else:
+            act_output = self.act_head(torch.cat([embed, self.spd_encoder(spd[:,None])], dim=1)).view(-1,self.num_cmds,1,self.num_steers+self.num_throts+1)
+            act_output = action_logits(act_output, self.num_steers, self.num_throts).squeeze(2)
+
+        if self.two_cam:
+            return act_output, wide_seg_output, narr_seg_output
+        else:
+            return act_output, wide_seg_output
+
 
 
     @torch.no_grad()
@@ -140,43 +102,34 @@ class CameraModel(nn.Module):
         assert (self.all_speeds and spd is None) or \
                (not self.all_speeds and spd is not None)
         
-        #wide_embed = self.backbone_wide(self.normalize(wide_rgb/255.))
-        wide_embed = self.backbone_wide(wide_rgb/255.)
+        if self.use_trained_encoder:
+            wide_embed = self.backbone_wide(wide_rgb/255.)
+        else:
+            wide_embed = self.backbone_wide(self.normalize(wide_rgb/255.))
 
-        space_interpretation = self.latent_space_head(wide_embed)
-
-        # if self.two_cam:
-        #     narr_embed = self.backbone_narr(self.normalize(narr_rgb/255.))
-        #     embed = torch.cat([
-        #         wide_embed.mean(dim=[2,3]),
-        #         self.bottleneck_narr(narr_embed.mean(dim=[2,3])),
-        #     ], dim=1)
-        # else:
-        #     embed = wide_embed.mean(dim=[2,3])
-        
-        # Spaces action_head from latent space
-        #embed = self.latent_space_spacing(embed)
+        if self.two_cam:
+            narr_embed = self.backbone_narr(self.normalize(narr_rgb/255.))
+            embed = torch.cat([
+                wide_embed.mean(dim=[2,3]),
+                self.bottleneck_narr(narr_embed.mean(dim=[2,3])),
+            ], dim=1)
+        else:
+            embed = wide_embed.mean(dim=[2,3])
 
         # Action logits
-        # if self.all_speeds:
-        #     act_output = self.act_head(embed).view(-1,self.num_cmds,self.num_speeds,self.num_steers+self.num_throts+1)
-        #     # Action logits
-        #     steer_logits = act_output[0,cmd,:,:self.num_steers]
-        #     throt_logits = act_output[0,cmd,:,self.num_steers:self.num_steers+self.num_throts]
-        #     brake_logits = act_output[0,cmd,:,-1]
-        # else:
-        #     act_output = self.act_head(torch.cat([embed, self.spd_encoder(spd[:,None])], dim=1)).view(-1,self.num_cmds,1,self.num_steers+self.num_throts+1)
+        if self.all_speeds:
+            act_output = self.act_head(embed).view(-1,self.num_cmds,self.num_speeds,self.num_steers+self.num_throts+1)
+            # Action logits
+            steer_logits = act_output[0,cmd,:,:self.num_steers]
+            throt_logits = act_output[0,cmd,:,self.num_steers:self.num_steers+self.num_throts]
+            brake_logits = act_output[0,cmd,:,-1]
+        else:
+            act_output = self.act_head(torch.cat([embed, self.spd_encoder(spd[:,None])], dim=1)).view(-1,self.num_cmds,1,self.num_steers+self.num_throts+1)
             
-        #     # Action logits
-        #     steer_logits = act_output[0,cmd,0,:self.num_steers]
-        #     throt_logits = act_output[0,cmd,0,self.num_steers:self.num_steers+self.num_throts]
-        #     brake_logits = act_output[0,cmd,0,-1]
-
-        act_output = self.act_head(space_interpretation).view(-1,self.num_cmds,self.num_speeds,self.num_steers+self.num_throts+1)
-        # Action logits
-        steer_logits = act_output[0,cmd,:,:self.num_steers]
-        throt_logits = act_output[0,cmd,:,self.num_steers:self.num_steers+self.num_throts]
-        brake_logits = act_output[0,cmd,:,-1]
+            # Action logits
+            steer_logits = act_output[0,cmd,0,:self.num_steers]
+            throt_logits = act_output[0,cmd,0,self.num_steers:self.num_steers+self.num_throts]
+            brake_logits = act_output[0,cmd,0,-1]
 
         return steer_logits, throt_logits, brake_logits
 
@@ -194,20 +147,3 @@ def action_logits(raw_logits, num_steers, num_throts):
     
     return act_logits
 
-
-
-# if __name__ == '__main__':
-    
-#     from collections import namedtuple
-#     Config = namedtuple('Config', [
-#         'num_steers', 'num_throts', 'num_speeds', 'seg_channels', 'imagenet_pretrained'
-#     ])
-    
-#     config = Config(num_steers=9, num_throts=3, num_speeds=4, seg_channels=[4,6,7,8,10], imagenet_pretrained=True)
-#     model = TwoCameraModel(config)
-    
-#     wide_rgb = torch.zeros((1,3,128,480))
-#     narr_rgb = torch.zeros((1,3,64,384))
-    
-#     act_output, seg_output = model(wide_rgb, narr_rgb)
-#     print (act_output.shape, seg_output.shape)

@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 from torch import nn, optim
-from .models import EgoModel, CameraModel, Autoencoder
+from .models import EgoModel, CameraModel, Autoencoder, CameraModelA
 from .bellman import BellmanUpdater
 from .datasets.main_dataset import MainDataset
 from .utils import to_numpy
@@ -27,7 +27,10 @@ class RAILS:
 
         ######### Create models
         self.ego_model  = EgoModel(dt=1./args.fps*(args.num_repeat+1)).to(args.device)
-        self.main_model = CameraModel(config).to(args.device)
+        if args.impA:
+            self.main_model = CameraModelA(config).to(args.device)
+        else:
+            self.main_model = CameraModel(config).to(args.device)
         ######### If autoencoder training
         #self.autoencoder = Autoencoder(config).to(args.device)
         #########
@@ -44,14 +47,12 @@ class RAILS:
         #########
         self.ego_optim  = optim.Adam(self.ego_model.parameters(), lr=args.lr)
         self.main_optim = optim.Adam(self.main_model.parameters(), lr=args.lr)
-        ######### 
+        ######### If autoencoder training
         #self.autoencoder_optim = optim.Adam(self.autoencoder.parameters(), lr=args.lr)
 
         #########
         BellmanUpdater.setup(config, self.ego_model, device=self.device)
         #########
-
-        #self.normalize = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]).to(args.device)
         
     def main_model_state_dict(self):
         if self.multi_gpu:
@@ -77,22 +78,14 @@ class RAILS:
         cmds      = cmds.long().to(self.device)
 
         act_probs = F.softmax(act_vals/self.temperature, dim=3)
-
-        print("act_probs: ", act_probs.shape)
-        print("cmds: ", cmds.shape)
         
         if self.use_narr_cam:
             act_outputs, wide_seg_outputs, narr_seg_outputs = self.main_model(wide_rgbs, narr_rgbs, spd=None if self.all_speeds else spds)
         else:
-            #act_outputs, wide_seg_outputs = self.main_model(wide_rgbs, narr_rgbs, spd=None if self.all_speeds else spds)
-            act_outputs = self.main_model(wide_rgbs, narr_rgbs, spd=None if self.all_speeds else spds)
+            act_outputs, wide_seg_outputs = self.main_model(wide_rgbs, narr_rgbs, spd=None if self.all_speeds else spds)
         
         if self.all_speeds:
             act_loss = F.kl_div(F.log_softmax(act_outputs, dim=3), act_probs, reduction='none').mean(dim=[2,3])
-            #print("act_loss shape: ", act_loss.shape)
-            #act_loss = act_loss.mean(dim=[2,3])
-            #print("act_loss.mean shape: ", act_loss.shape)
-            #exit()
         else:
             act_probs = self.spd_lerp(act_probs, spds)
             act_loss = F.kl_div(F.log_softmax(act_outputs, dim=2), act_probs, reduction='none').mean(dim=2)
@@ -106,15 +99,13 @@ class RAILS:
 
         act_loss = torch.mean(torch.where(is_turn, turn_loss, foll_loss) + torch.where(is_lane, lane_loss, foll_loss))
 
-        # Encoder is already trained with semantic segmentation
-        # seg_loss = F.cross_entropy(F.interpolate(wide_seg_outputs,scale_factor=4), wide_sems)
+        seg_loss = F.cross_entropy(F.interpolate(wide_seg_outputs,scale_factor=4), wide_sems)
 
-        # if self.use_narr_cam:
-        #     seg_loss = seg_loss + F.cross_entropy(F.interpolate(narr_seg_outputs,scale_factor=4), narr_sems)
-        #     seg_loss = seg_loss / 2
+        if self.use_narr_cam:
+            seg_loss = seg_loss + F.cross_entropy(F.interpolate(narr_seg_outputs,scale_factor=4), narr_sems)
+            seg_loss = seg_loss / 2
 
-        # Encoder is already trained with semantic segmentation
-        loss = act_loss #+ self.seg_weight * seg_loss
+        loss = act_loss + self.seg_weight * seg_loss
         
         # Backpropogate
         self.main_optim.zero_grad()
@@ -130,9 +121,9 @@ class RAILS:
         
         return dict(
             act_loss=float(act_loss),
-            #seg_loss=float(seg_loss),
+            seg_loss=float(seg_loss),
             gt_seg=to_numpy(wide_sems[0]),
-            #pred_seg  =to_numpy(wide_seg_outputs[0]).argmax(0),
+            pred_seg  =to_numpy(wide_seg_outputs[0]).argmax(0),
             cmd     =int(cmds[0]),
             spd     =float(spds[0]),
             wide_rgb=to_numpy(wide_rgbs[0].permute(1,2,0).byte()),
@@ -185,6 +176,62 @@ class RAILS:
             pred_yaws=to_numpy(pred_yaws),
             locs=to_numpy(locs),
             yaws=to_numpy(yaws),
+        )
+
+    def train_main_imp_A(self, wide_rgbs, wide_sems, narr_rgbs, narr_sems, act_vals, spds, cmds):
+
+        wide_rgbs = wide_rgbs.float().permute(0,3,1,2).to(self.device)
+        narr_rgbs = narr_rgbs.float().permute(0,3,1,2).to(self.device)
+        wide_sems = wide_sems.long().to(self.device)
+        narr_sems = narr_sems.long().to(self.device)
+        act_vals  = act_vals.float().permute(0,1,3,2).to(self.device)
+        spds      = spds.float().to(self.device)
+        cmds      = cmds.long().to(self.device)
+
+        act_probs = F.softmax(act_vals/self.temperature, dim=3)
+        
+        act_outputs = self.main_model(wide_rgbs, narr_rgbs, spd=None if self.all_speeds else spds)
+        
+        if self.all_speeds:
+            act_loss = F.kl_div(F.log_softmax(act_outputs, dim=3), act_probs, reduction='none').mean(dim=[2,3])
+        else:
+            act_probs = self.spd_lerp(act_probs, spds)
+            act_loss = F.kl_div(F.log_softmax(act_outputs, dim=2), act_probs, reduction='none').mean(dim=2)
+        
+        turn_loss = (act_loss[:,0]+act_loss[:,1]+act_loss[:,2]+act_loss[:,3])/4
+        lane_loss = (act_loss[:,4]+act_loss[:,5]+act_loss[:,3])/3
+        foll_loss = act_loss[:,3]
+        
+        is_turn = (cmds==0)|(cmds==1)|(cmds==2)
+        is_lane = (cmds==4)|(cmds==5)
+
+        act_loss = torch.mean(torch.where(is_turn, turn_loss, foll_loss) + torch.where(is_lane, lane_loss, foll_loss))
+
+        loss = act_loss
+        
+        # Backpropogate
+        self.main_optim.zero_grad()
+        loss.backward()
+        self.main_optim.step()
+        
+        if self.all_speeds:
+            act_prob      = BellmanUpdater._batch_lerp(act_probs[0,int(cmds[0])].permute(1,0), spds[0:1], min_val=BellmanUpdater._min_speeds, max_val=BellmanUpdater._max_speeds)
+            pred_act_prob = BellmanUpdater._batch_lerp(F.softmax(act_outputs[0,int(cmds[0])],dim=1).permute(1,0), spds[0:1], min_val=BellmanUpdater._min_speeds, max_val=BellmanUpdater._max_speeds)
+        else:
+            act_prob      = act_probs[0,int(cmds[0])]
+            pred_act_prob = F.softmax(act_outputs[0,int(cmds[0])], dim=0)
+        
+        return dict(
+            act_loss=float(act_loss),
+            gt_seg=to_numpy(wide_sems[0]),
+            cmd     =int(cmds[0]),
+            spd     =float(spds[0]),
+            wide_rgb=to_numpy(wide_rgbs[0].permute(1,2,0).byte()),
+            narr_rgb=to_numpy(narr_rgbs[0].permute(1,2,0).byte()),
+            act_prob=to_numpy(act_prob[:-1]).reshape(self.num_throts,self.num_steers),
+            pred_act_prob=to_numpy(pred_act_prob[:-1]).reshape(self.num_throts,self.num_steers),
+            act_brak=float(act_prob[-1]),
+            pred_act_brak=float(pred_act_prob[-1])
         )
 
     def bellman_plan(self, lbls, locs, rots, spds, cmd, visualize=None, dense_action_values=False):
@@ -264,10 +311,6 @@ class RAILS:
         wide_rgbs = wide_rgbs.float().permute(0,3,1,2).to(self.device)
         wide_sems = wide_sems.long().to(self.device)
 
-
-        #act_probs = F.softmax(act_vals/self.temperature, dim=3)
-        
-        #wide_rgbs = self.normalize(wide_rgbs/255.)
         wide_rgbs = wide_rgbs/255.
 
         wide_seg_outputs, decoded_rgb = self.autoencoder(wide_rgbs, spd=None if self.all_speeds else spds)
@@ -344,12 +387,6 @@ class RAILSActionLabeler():
         if worker_id == total_worker-1:
             self.end_idx = max(self.end_idx, total_frames)
 
-        # print (self.start_idx, self.end_idx)
-        # DEBUG
-        # self.start_idx = 
-        # self.end_idx = self.start_idx + 100
-        # END DEBUG
-
         self.worker_id = worker_id
         self.num_per_log = args.num_per_log
         
@@ -373,18 +410,8 @@ class RAILSActionLabeler():
                     act_val_brak=float(action_value[0,-1]),
                     cmd=cmd,
                 ), count, worker_id=self.worker_id)
-
-                # logger.log_label_info(dict(
-                #     wide_rgb=wide_rgb,
-                #     narr_rgb=narr_rgb,
-                #     act_val_norm=action_value[0,:-1].reshape(self._rails.num_throts, self._rails.num_steers),
-                #     act_val_brak=float(action_value[0,-1]),
-                #     cmd=cmd,
-                # ), count, worker_id=self.worker_id)
             
             self.write_dataset.save.remote(idx*len(self.camera_yaws), action_values)
-
-            # self.write_dataset.save(idx*len(self.camera_yaws), action_values)
         
         logger.log_label_info.remote(dict(
             wide_rgb=wide_rgb,
@@ -393,11 +420,3 @@ class RAILSActionLabeler():
             act_val_brak=float(action_value[0,-1]),
             cmd=cmd,
         ), count, worker_id=self.worker_id)
-
-        # logger.log_label_info(dict(
-        #     wide_rgb=wide_rgb,
-        #     narr_rgb=narr_rgb,
-        #     act_val_norm=action_value[0,:-1].reshape(self._rails.num_throts, self._rails.num_steers),
-        #     act_val_brak=float(action_value[0,-1]),
-        #     cmd=cmd,
-        # ), count, worker_id=self.worker_id)

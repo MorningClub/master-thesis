@@ -17,9 +17,6 @@ def main(args):
     
     rails = RAILS(args)
     data, validation = data_loader('custom_main', args)
-    #TODO: implement logger for autoencoder, reconstructions and loss, val_loss, test_loss maybe
-    #logger = Logger('carla_train_phase2', args)
-    #save_dir = logger.save_dir
     save_dir = "encoder_models"
 
     if args.resume:
@@ -60,18 +57,6 @@ def main(args):
         pred_seg = opt_info_validation.pop("pred_seg")
         gt_seg = opt_info_validation.pop("gt_seg")
 
-        # wide_rgb = opt_info.pop("wide_rgb")
-        # decoded_rgb = opt_info.pop("decoded_rgb")
-        # pred_seg = opt_info.pop("pred_seg")
-        # gt_seg = opt_info.pop("gt_seg")
-            
-            # if global_it % args.num_per_log == 0:
-            #     logger.log_main_info(global_it, opt_info)
-        
-            # global_it += 1
-        print("Epoch training loss: ", cumulative_training_loss/len(data.dataset))
-        print("Epoch validation loss: ", cumulative_validation_loss/len(validation.dataset))
-
         with open("training_losses_ca333000.csv", "a") as training_loss_file:
             training_loss_file.write(f"{epoch}, {cumulative_training_loss/1000000}, {cumulative_validation_loss/15000}\n")
 
@@ -92,8 +77,8 @@ if __name__ == '__main__':
     
     parser.add_argument('--resume', default=None)
     
-    parser.add_argument('--data-dir', default='/lhome/asszewcz/Documents/WorldOnRails/main_data_dir/main_trajs6_converted2')
-    parser.add_argument('--config-path', default='/lhome/asszewcz/Documents/WorldOnRails/config_nocrash.yaml')
+    parser.add_argument('--data-dir', default='')
+    parser.add_argument('--config-path', default='')
     parser.add_argument('--device', choices=['cpu', 'cuda'], default='cuda')
     
     # Training data config

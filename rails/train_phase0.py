@@ -30,9 +30,9 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     
-    parser.add_argument('--data-dir', default='/lhome/asszewcz/Documents/WorldOnRails/ego_data_dir')
-    parser.add_argument('--save-dir', default='/lhome/asszewcz/Documents/WorldOnRails/ego_model_dir/ego_model.th')
-    parser.add_argument('--config-path', default='/lhome/asszewcz/Documents/WorldOnRails/config.yaml')
+    parser.add_argument('--data-dir', default='')
+    parser.add_argument('--save-dir', default='')
+    parser.add_argument('--config-path', default='')
     parser.add_argument('--device', choices=['cpu', 'cuda'], default='cuda')
 
     # Training data config

@@ -43,8 +43,8 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--data-dir', default='/lhome/asszewcz/Documents/WorldOnRails/main_data_dir')  #/lhome/asszewcz/work/main_data_dir
-    parser.add_argument('--config-path', default='/lhome/asszewcz/Documents/WorldOnRails/config_nocrash.yaml')
+    parser.add_argument('--data-dir', default='')
+    parser.add_argument('--config-path', default='')
     parser.add_argument('--device', choices=['cpu', 'cuda'], default='cuda')
 
     # Training data config

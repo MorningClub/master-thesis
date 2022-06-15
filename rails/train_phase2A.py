@@ -32,7 +32,7 @@ def main(args):
     global_it = 0
     for epoch in range(start,start+args.num_epoch):
         for wide_rgbs, wide_sems, narr_rgbs, narr_sems, act_vals, spds, cmds in tqdm.tqdm(data, desc='Epoch {}'.format(epoch)):
-            opt_info = rails.train_main(wide_rgbs, wide_sems, narr_rgbs, narr_sems, act_vals, spds, cmds)
+            opt_info = rails.train_main_imp_A(wide_rgbs, wide_sems, narr_rgbs, narr_sems, act_vals, spds, cmds)
             
             if global_it % args.num_per_log == 0:
                 logger.log_main_info(global_it, opt_info)
@@ -55,7 +55,7 @@ if __name__ == '__main__':
     parser.add_argument('--data-dir', default='')
     parser.add_argument('--config-path', default='')
     parser.add_argument('--device', choices=['cpu', 'cuda'], default='cuda')
-    parser.add_argument('--useA', type=bool, default=False)
+    parser.add_argument('--useA', type=bool, default=True)
     
     # Training data config
     parser.add_argument('--fps', type=float, default=20)
